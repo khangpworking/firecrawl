@@ -63,9 +63,12 @@ services:
     # NOTE: If you don't want to build the service locally,
     # comment out the build: statement and uncomment the image: statement
     # image: ghcr.io/firecrawl/playwright-service:latest
+    # (the upstream image has no CloakBrowser; set BROWSER_ENGINE=playwright with it)
     build: apps/playwright-service-ts
     environment:
       PORT: 3000
+      # cloak = CloakBrowser stealth Chromium, playwright = stock Chromium
+      BROWSER_ENGINE: ${BROWSER_ENGINE:-cloak}
       PROXY_SERVER: ${PROXY_SERVER}
       PROXY_USERNAME: ${PROXY_USERNAME}
       PROXY_PASSWORD: ${PROXY_PASSWORD}

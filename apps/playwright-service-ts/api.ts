@@ -12,6 +12,7 @@ import UserAgent from 'user-agents';
 import { getError } from './helpers/get_error';
 import { Server } from 'proxy-chain';
 import { isInternalHost, ssrfPrepareRequest } from './helpers/ssrf';
+import { launch as cloakLaunch } from 'cloakbrowser';
 
 dotenv.config();
 
@@ -26,6 +27,9 @@ const MAX_CONCURRENT_PAGES = Math.max(
   1,
   Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10,
 );
+// 'playwright' (stock Chromium) or 'cloak' (CloakBrowser stealth Chromium).
+const BROWSER_ENGINE = (process.env.BROWSER_ENGINE || 'playwright').toLowerCase();
+const USE_CLOAK = BROWSER_ENGINE === 'cloak';
 const ALLOW_LOCAL_WEBHOOKS =
   (process.env.ALLOW_LOCAL_WEBHOOKS || 'False').toUpperCase() === 'TRUE';
 
@@ -158,10 +162,19 @@ interface UrlModel {
   skip_tls_verification?: boolean;
 }
 
-let browser: Browser;
+let browser: Browser | undefined;
 
-const initializeBrowser = async () => {
-  browser = await chromium.launch({
+const launchBrowser = async (): Promise<Browser> => {
+  if (USE_CLOAK) {
+    // CloakBrowser sets its own consistent fingerprint and stealth args.
+    // Sandbox flags match the stock launch for running in a locked-down container.
+    console.log('Browser engine: CloakBrowser');
+    return (await cloakLaunch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    })) as unknown as Browser;
+  }
+  return chromium.launch({
     headless: true,
     args: [
       '--no-sandbox',
@@ -175,6 +188,19 @@ const initializeBrowser = async () => {
   });
 };
 
+const initializeBrowser = async () => {
+  const launched = await launchBrowser();
+  // If the browser process dies, forget it so the next request relaunches
+  // it instead of failing every request with TargetClosedError.
+  launched.on('disconnected', () => {
+    if (browser === launched) {
+      console.warn('Browser disconnected; it will relaunch on the next request.');
+      browser = undefined;
+    }
+  });
+  browser = launched;
+};
+
 const createContext = async (
   skipTlsVerification: boolean = false,
   userAgentOverride?: string,
@@ -182,14 +208,17 @@ const createContext = async (
   context: BrowserContext;
   securityState: ContextSecurityState;
 }> => {
-  const userAgent = userAgentOverride || new UserAgent().toString();
+  // A random UA would contradict CloakBrowser's fingerprint, so only the
+  // stock engine gets one. Caller-supplied overrides still apply to both.
+  const userAgent =
+    userAgentOverride || (USE_CLOAK ? undefined : new UserAgent().toString());
   const viewport = { width: 1280, height: 800 };
   const securityState: ContextSecurityState = {
     blockedNavigationRequestUrl: null,
   };
 
   const contextOptions: any = {
-    userAgent,
+    ...(userAgent && { userAgent }),
     viewport,
     ignoreHTTPSErrors: skipTlsVerification,
     serviceWorkers: 'block',
@@ -199,7 +228,8 @@ const createContext = async (
     server: `http://127.0.0.1:${ssrfProxyPort}`,
   };
 
-  const newContext = await browser.newContext(contextOptions);
+  if (!browser) await initializeBrowser();
+  const newContext = await browser!.newContext(contextOptions);
 
   if (BLOCK_MEDIA) {
     await newContext.route(

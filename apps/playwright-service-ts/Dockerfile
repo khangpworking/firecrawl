@@ -17,9 +17,21 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright
 # Install Playwright dependencies
 RUN pnpm exec playwright install chromium --with-deps
 
+# CloakBrowser stealth Chromium, used when BROWSER_ENGINE=cloak. cloakbrowser
+# 0.6.5 downloads the free, signature-verified binary from GitHub releases and
+# needs no license key. Auto-update stays off so it never switches to a newer
+# binary that needs a key. Build with --build-arg INSTALL_CLOAKBROWSER=false
+# to skip the ~200MB download.
+ENV CLOAKBROWSER_CACHE_DIR=/usr/local/share/cloakbrowser
+ENV CLOAKBROWSER_AUTO_UPDATE=false
+ARG INSTALL_CLOAKBROWSER=true
+RUN mkdir -p "$CLOAKBROWSER_CACHE_DIR" \
+  && if [ "$INSTALL_CLOAKBROWSER" = "true" ]; then pnpm exec cloakbrowser install; fi
+
 RUN pnpm run build
 
-RUN chown -R node:node /usr/src/app \
+# CloakBrowser writes small marker files into its cache dir at launch.
+RUN chown -R node:node /usr/src/app "$CLOAKBROWSER_CACHE_DIR" \
   && chmod -R a+rX /usr/local/share/playwright
 
 ARG PORT
